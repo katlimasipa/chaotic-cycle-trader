@@ -144,11 +144,18 @@ export function useDerivBot() {
     if (!c) return;
     if (inFlightRef.current) return;
 
-    const direction = momentumSignal(ticksRef.current, 5);
-    if (!direction) {
-      pushLog("No clear signal — skipping cycle.");
+    if (cooldownRef.current > 0) {
+      cooldownRef.current -= 1;
+      pushLog(`Cooldown: ${cooldownRef.current} cycles remaining.`);
       return;
     }
+
+    const signal = momentumSignal(ticksRef.current, 10);
+    if (!signal.direction) {
+      // Don't spam logs every 400ms
+      return;
+    }
+    const direction = signal.direction;
 
     inFlightRef.current = true;
     cycleRef.current += 1;
@@ -156,7 +163,9 @@ export function useDerivBot() {
     const stake = stakeForProfit(totalProfitRef.current);
 
     setState((s) => ({ ...s, status: "running", cycle }));
-    pushLog(`Cycle #${cycle}: opening ${config.batchSize}× ${direction} @ $${stake}`);
+    pushLog(
+      `Cycle #${cycle}: ${signal.reason} → 5× ${direction} @ $${stake}`,
+    );
 
     // Create placeholder trades
     const placeholders: TradeRecord[] = Array.from({ length: config.batchSize }, (_, i) => ({
