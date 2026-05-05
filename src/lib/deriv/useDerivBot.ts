@@ -62,6 +62,8 @@ export function useDerivBot() {
   const inFlightRef = useRef(false);
   const totalProfitRef = useRef(0);
   const cycleRef = useRef(0);
+  const cooldownRef = useRef(0); // cycles to skip
+  const consecutiveLossesRef = useRef(0);
 
   const pushLog = useCallback((msg: string) => {
     setState((s) => ({
