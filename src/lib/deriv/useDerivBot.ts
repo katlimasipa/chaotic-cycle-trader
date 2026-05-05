@@ -243,9 +243,23 @@ export function useDerivBot() {
       );
     });
 
+    const profitBefore = totalProfitRef.current;
     await Promise.all(settlePromises);
     inFlightRef.current = false;
-    pushLog(`Cycle #${cycle} complete. PnL so far: $${totalProfitRef.current.toFixed(2)}`);
+    const cyclePnl = totalProfitRef.current - profitBefore;
+
+    if (cyclePnl < 0) {
+      consecutiveLossesRef.current += 1;
+      cooldownRef.current = consecutiveLossesRef.current >= 2 ? 5 : 2;
+      pushLog(
+        `Cycle #${cycle} LOSS $${cyclePnl.toFixed(2)}. Cooldown ${cooldownRef.current} cycles (streak ${consecutiveLossesRef.current}).`,
+      );
+    } else {
+      consecutiveLossesRef.current = 0;
+      pushLog(
+        `Cycle #${cycle} WIN +$${cyclePnl.toFixed(2)}. Total: $${totalProfitRef.current.toFixed(2)}`,
+      );
+    }
 
     // Check stop conditions
     if (config.takeProfit != null && totalProfitRef.current >= config.takeProfit) {
