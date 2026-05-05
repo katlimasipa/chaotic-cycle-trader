@@ -306,6 +306,8 @@ export function useDerivBot() {
     inFlightRef.current = false;
     totalProfitRef.current = 0;
     cycleRef.current = 0;
+    cooldownRef.current = 0;
+    consecutiveLossesRef.current = 0;
     setState((s) => ({
       ...s,
       status: "idle",
