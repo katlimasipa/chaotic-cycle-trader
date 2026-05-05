@@ -62,6 +62,8 @@ export function useDerivBot() {
   const inFlightRef = useRef(false);
   const totalProfitRef = useRef(0);
   const cycleRef = useRef(0);
+  const cooldownRef = useRef(0); // cycles to skip
+  const consecutiveLossesRef = useRef(0);
 
   const pushLog = useCallback((msg: string) => {
     setState((s) => ({
@@ -142,11 +144,18 @@ export function useDerivBot() {
     if (!c) return;
     if (inFlightRef.current) return;
 
-    const direction = momentumSignal(ticksRef.current, 5);
-    if (!direction) {
-      pushLog("No clear signal — skipping cycle.");
+    if (cooldownRef.current > 0) {
+      cooldownRef.current -= 1;
+      pushLog(`Cooldown: ${cooldownRef.current} cycles remaining.`);
       return;
     }
+
+    const signal = momentumSignal(ticksRef.current, 10);
+    if (!signal.direction) {
+      // Don't spam logs every 400ms
+      return;
+    }
+    const direction = signal.direction;
 
     inFlightRef.current = true;
     cycleRef.current += 1;
@@ -154,7 +163,9 @@ export function useDerivBot() {
     const stake = stakeForProfit(totalProfitRef.current);
 
     setState((s) => ({ ...s, status: "running", cycle }));
-    pushLog(`Cycle #${cycle}: opening ${config.batchSize}× ${direction} @ $${stake}`);
+    pushLog(
+      `Cycle #${cycle}: ${signal.reason} → 5× ${direction} @ $${stake}`,
+    );
 
     // Create placeholder trades
     const placeholders: TradeRecord[] = Array.from({ length: config.batchSize }, (_, i) => ({
@@ -232,9 +243,23 @@ export function useDerivBot() {
       );
     });
 
+    const profitBefore = totalProfitRef.current;
     await Promise.all(settlePromises);
     inFlightRef.current = false;
-    pushLog(`Cycle #${cycle} complete. PnL so far: $${totalProfitRef.current.toFixed(2)}`);
+    const cyclePnl = totalProfitRef.current - profitBefore;
+
+    if (cyclePnl < 0) {
+      consecutiveLossesRef.current += 1;
+      cooldownRef.current = consecutiveLossesRef.current >= 2 ? 5 : 2;
+      pushLog(
+        `Cycle #${cycle} LOSS $${cyclePnl.toFixed(2)}. Cooldown ${cooldownRef.current} cycles (streak ${consecutiveLossesRef.current}).`,
+      );
+    } else {
+      consecutiveLossesRef.current = 0;
+      pushLog(
+        `Cycle #${cycle} WIN +$${cyclePnl.toFixed(2)}. Total: $${totalProfitRef.current.toFixed(2)}`,
+      );
+    }
 
     // Check stop conditions
     if (config.takeProfit != null && totalProfitRef.current >= config.takeProfit) {
@@ -281,6 +306,8 @@ export function useDerivBot() {
     inFlightRef.current = false;
     totalProfitRef.current = 0;
     cycleRef.current = 0;
+    cooldownRef.current = 0;
+    consecutiveLossesRef.current = 0;
     setState((s) => ({
       ...s,
       status: "idle",
