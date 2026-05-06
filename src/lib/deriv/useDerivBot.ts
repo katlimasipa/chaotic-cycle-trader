@@ -342,8 +342,8 @@ export function useDerivBot() {
                       }
                     : t,
                 ),
-                wins: s.wins + (won ? 1 : 0),
-                losses: s.losses + (won ? 0 : 1),
+                wins: won ? s.wins + 1 : s.wins,
+                losses: won ? s.losses : s.losses + 1,
               }));
               updateProfit(profit);
               resolve();
@@ -353,6 +353,7 @@ export function useDerivBot() {
       );
     });
 
+    pushLog(`Waiting for ${settlePromises.length} trades to settle...`);
     const profitBefore = totalProfitRef.current;
     await Promise.all(settlePromises);
     inFlightRef.current = false;
