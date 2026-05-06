@@ -187,4 +187,16 @@ export class DerivClient {
       onUpdate,
     );
   }
+
+  /** Fetch candles history. granularity in seconds (900 = 15m, 3600 = 1h). */
+  async candles(symbol: string, granularity: number, count = 60) {
+    return this.send({
+      ticks_history: symbol,
+      adjust_start_time: 1,
+      count,
+      end: "latest",
+      granularity,
+      style: "candles",
+    });
+  }
 }
