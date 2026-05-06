@@ -38,7 +38,6 @@ interface UseDerivBotState {
 
 const DEFAULT_CONFIG: BotConfig = {
   symbols: SYMBOL_LIST.map((s) => s.code),
-  batchSize: 5,
   takeProfit: null,
   stopLoss: null,
   maxCycles: null,
@@ -277,97 +276,88 @@ export function useDerivBot() {
 
     setState((s) => ({ ...s, status: "running", cycle, selected: chosen }));
     pushLog(
-      `Cycle #${cycle}: ${chosen.symbol} ${chosen.mode.toUpperCase()} → 5× ${chosen.direction} @ $${stake} (${duration}t)`,
+      `Cycle #${cycle}: ${chosen.symbol} ${chosen.mode.toUpperCase()} → ${chosen.direction} @ $${stake} (${duration}t)`,
     );
 
-    const placeholders: TradeRecord[] = Array.from({ length: config.batchSize }, (_, i) => ({
-      id: `${cycle}-${i}-${Date.now()}`,
-      symbol: chosen!.symbol,
+    const trade: TradeRecord = {
+      id: `${cycle}-${Date.now()}`,
+      symbol: chosen.symbol,
       cycle,
-      direction: chosen!.direction,
+      direction: chosen.direction,
       stake,
       duration,
       status: "pending",
       openedAt: Date.now(),
-    }));
-    setState((s) => ({ ...s, trades: [...placeholders, ...s.trades].slice(0, 200) }));
+    };
+    
+    setState((s) => ({ ...s, trades: [trade, ...s.trades].slice(0, 200) }));
 
-    const buyResults = await Promise.all(
-      placeholders.map((p) =>
-        buyWithRetry(chosen!.symbol, chosen!.direction, stake, duration).then((r) => ({ p, ...r })),
-      ),
-    );
+    const { res, err } = await buyWithRetry(chosen.symbol, chosen.direction, stake, duration);
 
-    const settlePromises: Promise<void>[] = [];
-
-    buyResults.forEach(({ p, res, err }: any) => {
-      if (err || !res?.buy) {
-        const message = err?.message || "buy failed";
-        setState((s) => ({
-          ...s,
-          trades: s.trades.map((t) =>
-            t.id === p.id ? { ...t, status: "error", error: message, closedAt: Date.now() } : t,
-          ),
-        }));
-        pushLog(`Trade ${p.id} failed: ${message}`);
-        return;
-      }
-      const contractId = res.buy.contract_id as number;
+    if (err || !res?.buy) {
+      const message = err?.message || "Buy failed";
       setState((s) => ({
         ...s,
         trades: s.trades.map((t) =>
-          t.id === p.id ? { ...t, status: "open", contractId } : t,
+          t.id === trade.id ? { ...t, status: "error", error: message, closedAt: Date.now() } : t
         ),
       }));
-      settlePromises.push(
-        new Promise<void>((resolve) => {
-          c.openContractStream(contractId, (msg) => {
-            const poc = msg.proposal_open_contract;
-            if (!poc) return;
-            if (poc.is_sold) {
-              const profit = Number(poc.profit ?? 0);
-              const won = profit >= 0;
-              setState((s) => ({
-                ...s,
-                trades: s.trades.map((t) =>
-                  t.id === p.id
-                    ? {
-                        ...t,
-                        status: won ? "won" : "lost",
-                        profit,
-                        payout: poc.payout,
-                        entrySpot: poc.entry_spot,
-                        exitSpot: poc.exit_spot,
-                        closedAt: Date.now(),
-                      }
-                    : t,
-                ),
-                wins: s.wins + (won ? 1 : 0),
-                losses: s.losses + (won ? 0 : 1),
-              }));
-              updateProfit(profit);
-              resolve();
-            }
-          }).catch(() => resolve());
-        }),
-      );
-    });
-
-    const profitBefore = totalProfitRef.current;
-    await Promise.all(settlePromises);
-    inFlightRef.current = false;
-    const cyclePnl = totalProfitRef.current - profitBefore;
-
-    if (cyclePnl < 0) {
-      consecutiveLossesRef.current += 1;
-      cooldownRef.current = consecutiveLossesRef.current >= 2 ? 5 : 2;
-      pushLog(
-        `Cycle #${cycle} LOSS $${cyclePnl.toFixed(2)} • cooldown ${cooldownRef.current} (streak ${consecutiveLossesRef.current})`,
-      );
-    } else {
-      consecutiveLossesRef.current = 0;
-      pushLog(`Cycle #${cycle} WIN +$${cyclePnl.toFixed(2)} • Total $${totalProfitRef.current.toFixed(2)}`);
+      pushLog(`Trade failed: ${message}`);
+      inFlightRef.current = false;
+      return;
     }
+
+    const contractId = res.buy.contract_id as number;
+    setState((s) => ({
+      ...s,
+      trades: s.trades.map((t) => (t.id === trade.id ? { ...t, status: "open", contractId } : t)),
+    }));
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        c.openContractStream(contractId, (msg) => {
+          const poc = msg.proposal_open_contract;
+          if (!poc) return;
+          if (poc.is_sold) {
+            const profit = Number(poc.profit ?? 0);
+            const won = profit >= 0;
+            setState((s) => ({
+              ...s,
+              trades: s.trades.map((t) =>
+                t.id === trade.id
+                  ? {
+                      ...t,
+                      status: won ? "won" : "lost",
+                      profit,
+                      payout: poc.payout,
+                      entrySpot: poc.entry_spot,
+                      exitSpot: poc.exit_spot,
+                      closedAt: Date.now(),
+                    }
+                  : t,
+              ),
+              wins: s.wins + (won ? 1 : 0),
+              losses: s.losses + (won ? 0 : 1),
+            }));
+            updateProfit(profit);
+            
+            if (!won) {
+              consecutiveLossesRef.current += 1;
+              cooldownRef.current = consecutiveLossesRef.current >= 2 ? 5 : 2;
+              pushLog(`Loss. Streak: ${consecutiveLossesRef.current}. Cooldown: ${cooldownRef.current}`);
+            } else {
+              consecutiveLossesRef.current = 0;
+              pushLog(`Win! +$${profit.toFixed(2)}`);
+            }
+            resolve();
+          }
+        }).catch(reject);
+      });
+    } catch (e) {
+      pushLog(`Stream error: ${e}`);
+    }
+
+    inFlightRef.current = false;
 
     if (config.takeProfit != null && totalProfitRef.current >= config.takeProfit) {
       pushLog(`Take profit reached. Stopping.`);

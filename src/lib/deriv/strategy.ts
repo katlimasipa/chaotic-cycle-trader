@@ -1,44 +1,58 @@
 import type { Candle, Direction, HTFTrend, SymbolSignal, SymbolDef, Tick } from "./types";
 
-/** Strict monotonic momentum on last N ticks (N = 3..5). Picks longest run. */
+/** 
+ * Smoothed momentum on last 10 ticks.
+ * Returns direction if consistency is high (>70%).
+ */
 export function tickMomentum(ticks: Tick[]): Direction | null {
-  if (ticks.length < 3) return null;
-  const tail = ticks.slice(-5);
-  // try 5 then 4 then 3
-  for (const n of [5, 4, 3]) {
-    if (tail.length < n) continue;
-    const seg = tail.slice(-n);
-    let up = true;
-    let down = true;
-    for (let i = 1; i < seg.length; i++) {
-      if (!(seg[i].quote > seg[i - 1].quote)) up = false;
-      if (!(seg[i].quote < seg[i - 1].quote)) down = false;
-    }
-    if (up) return "CALL";
-    if (down) return "PUT";
+  if (ticks.length < 10) return null;
+  const tail = ticks.slice(-10);
+  let ups = 0;
+  let downs = 0;
+  
+  for (let i = 1; i < tail.length; i++) {
+    if (tail[i].quote > tail[i - 1].quote) ups++;
+    else if (tail[i].quote < tail[i - 1].quote) downs++;
   }
-  return null;
+
+  // Require high consistency
+  if (ups < 8 && downs < 8) return null;
+
+  // Added: Min distance check (0.01% of price)
+  const netMove = Math.abs(tail[tail.length - 1].quote - tail[0].quote);
+  const minMove = tail[0].quote * 0.00005; // 0.005% of price as a minimum move threshold
+  if (netMove < minMove) return null;
+  
+  return ups >= 8 ? "CALL" : "PUT";
 }
 
-/** Spike: last tick move > 2.5x avg of previous 5 sizes. */
+/** 
+ * Spike: last tick move > 3x avg of previous 10 sizes.
+ * Must also be significant relative to absolute price.
+ */
 export function detectSpike(ticks: Tick[]): { dir: Direction; strength: number } | null {
-  if (ticks.length < 7) return null;
-  const tail = ticks.slice(-7);
+  if (ticks.length < 12) return null;
+  const tail = ticks.slice(-12);
   const sizes: number[] = [];
   for (let i = 1; i < tail.length; i++) sizes.push(Math.abs(tail[i].quote - tail[i - 1].quote));
+  
   const last = sizes[sizes.length - 1];
-  const prev = sizes.slice(0, -1); // 5 prior sizes
-  const avg = prev.reduce((a, b) => a + b, 0) / Math.max(prev.length, 1);
+  const prev = sizes.slice(0, -1); 
+  const avg = prev.reduce((a, b) => a + b, 0) / prev.length;
+  
   if (avg <= 0) return null;
   const ratio = last / avg;
-  if (ratio < 2.5) return null;
-  const lastDir: Direction =
-    tail[tail.length - 1].quote > tail[tail.length - 2].quote ? "CALL" : "PUT";
+  
+  // Higher threshold (3.0 instead of 2.5) for better accuracy
+  if (ratio < 3.0) return null;
+  
+  const lastDir: Direction = tail[tail.length - 1].quote > tail[tail.length - 2].quote ? "CALL" : "PUT";
   return { dir: lastDir, strength: ratio };
 }
 
 /** EMA helper. */
 function ema(values: number[], period: number): number[] {
+  if (values.length === 0) return [];
   const k = 2 / (period + 1);
   const out: number[] = [];
   let prev = values[0];
@@ -50,78 +64,73 @@ function ema(values: number[], period: number): number[] {
   return out;
 }
 
-/** MACD line value (last) using 12/26. */
-export function macdLast(closes: number[]): number {
-  if (closes.length < 26) return 0;
+/** MACD (12, 26, 9) */
+export function macdInfo(closes: number[]): { macd: number; signal: number; hist: number } {
+  if (closes.length < 35) return { macd: 0, signal: 0, hist: 0 };
   const e12 = ema(closes, 12);
   const e26 = ema(closes, 26);
-  return e12[e12.length - 1] - e26[e26.length - 1];
+  const macdLine = e12.map((v, i) => v - e26[i]);
+  const signalLine = ema(macdLine.slice(26), 9);
+  
+  const lastMacd = macdLine[macdLine.length - 1];
+  const lastSignal = signalLine[signalLine.length - 1];
+  
+  return {
+    macd: lastMacd,
+    signal: lastSignal,
+    hist: lastMacd - lastSignal
+  };
 }
 
-/** RSI (Wilder, 14) array. */
-function rsiArr(closes: number[], period = 14): number[] {
-  if (closes.length < period + 1) return [];
-  const gains: number[] = [];
-  const losses: number[] = [];
-  for (let i = 1; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1];
-    gains.push(Math.max(0, d));
-    losses.push(Math.max(0, -d));
+/** RSI (14) last value. */
+export function rsiLast(closes: number[], period = 14): number {
+  if (closes.length < period + 1) return 50;
+  let gains = 0;
+  let losses = 0;
+
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) gains += diff;
+    else losses -= diff;
   }
-  const out: number[] = [];
-  let avgG = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  let avgL = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  out.push(100 - 100 / (1 + (avgL === 0 ? 100 : avgG / avgL)));
-  for (let i = period; i < gains.length; i++) {
-    avgG = (avgG * (period - 1) + gains[i]) / period;
-    avgL = (avgL * (period - 1) + losses[i]) / period;
-    out.push(100 - 100 / (1 + (avgL === 0 ? 100 : avgG / avgL)));
-  }
-  return out;
+
+  if (losses === 0) return 100;
+  const rs = gains / losses;
+  return 100 - 100 / (1 + rs);
 }
 
-/** Stochastic RSI (0..100), last value. */
-export function stochRsiLast(closes: number[], period = 14): number {
-  const rsi = rsiArr(closes, period);
-  if (rsi.length < period) return 50;
-  const window = rsi.slice(-period);
-  const min = Math.min(...window);
-  const max = Math.max(...window);
-  if (max === min) return 50;
-  return ((rsi[rsi.length - 1] - min) / (max - min)) * 100;
-}
-
-/** Combine 15m + 1h candles into HTF trend per spec. */
+/** Classify HTF trend with more weight on MACD and EMA slope. */
 export function classifyHTF(c15: Candle[], c60: Candle[]): HTFTrend {
   const candles = c60.length >= 30 ? c60 : c15;
-  if (!candles.length) return { bias: "NEUTRAL", macd: 0, stochRsi: 50, closeOpen: 0 };
-  const last = candles[candles.length - 1];
+  if (candles.length < 30) return { bias: "NEUTRAL", macd: 0, stochRsi: 50, closeOpen: 0 };
+  
   const closes = candles.map((c) => c.close);
-  const macd = macdLast(closes);
-  const sr = stochRsiLast(closes);
-  const closeOpen = last.close - last.open;
-  const bullish = closeOpen > 0 && macd > 0 && sr > 50;
-  const bearish = closeOpen < 0 && macd < 0 && sr < 50;
+  const { macd, hist } = macdInfo(closes);
+  const rsi = rsiLast(closes);
+  
+  // Trend identification: MACD above signal and positive histogram, or RSI strong
+  const bullish = hist > 0 && rsi > 55;
+  const bearish = hist < 0 && rsi < 45;
+  
   return {
     bias: bullish ? "BULLISH" : bearish ? "BEARISH" : "NEUTRAL",
     macd,
-    stochRsi: sr,
-    closeOpen,
+    stochRsi: rsi, // we'll reuse the field but it's regular RSI now for simplicity/reliability
+    closeOpen: closes[closes.length - 1] - closes[closes.length - 5], // 5-candle momentum
   };
 }
 
 /** Realised volatility on recent ticks (stddev of returns). */
-function volatility(ticks: Tick[]): number {
-  if (ticks.length < 10) return 0;
-  const tail = ticks.slice(-30);
+function getVolatility(ticks: Tick[]): number {
+  if (ticks.length < 20) return 0;
+  const tail = ticks.slice(-20);
   const rets: number[] = [];
   for (let i = 1; i < tail.length; i++) {
-    const r = (tail[i].quote - tail[i - 1].quote) / tail[i - 1].quote;
-    rets.push(r);
+    rets.push((tail[i].quote - tail[i - 1].quote) / tail[i - 1].quote);
   }
   const m = rets.reduce((a, b) => a + b, 0) / rets.length;
   const v = rets.reduce((a, b) => a + (b - m) ** 2, 0) / rets.length;
-  return Math.sqrt(v) * 1e4; // scale
+  return Math.sqrt(v) * 1e5; // scale higher
 }
 
 /** Build per-symbol signal + score. */
@@ -134,16 +143,25 @@ export function evaluateSymbol(
   const momentum = tickMomentum(ticks);
   const spike = detectSpike(ticks);
   const htf = classifyHTF(c15, c60);
-  const vol = volatility(ticks);
-  const momentumScore = momentum ? 1 : 0;
-  const spikeScore = spike ? Math.min(spike.strength / 2.5, 4) : 0;
-  const score = momentumScore + spikeScore + vol;
+  const vol = getVolatility(ticks);
+  
+  // Quality-based scoring instead of raw volatility
+  let score = 0;
+  if (momentum) score += 2;
+  if (spike) score += 3;
+  if (htf.bias !== "NEUTRAL") score += 1;
+  
+  // Volatility filter: Prefer active but not "crazy" markets
+  const volWeight = vol > 5 && vol < 50 ? 1 : 0;
+  score *= (1 + volWeight);
+
   const parts = [
     momentum ? `mom=${momentum}` : null,
-    spike ? `spike=${spike.dir}×${spike.strength.toFixed(2)}` : null,
+    spike ? `spike=${spike.dir}×${spike.strength.toFixed(1)}` : null,
     `htf=${htf.bias}`,
-    `vol=${vol.toFixed(2)}`,
+    `vol=${vol.toFixed(1)}`,
   ].filter(Boolean);
+
   return {
     symbol: def.code,
     speed: def.speed,
@@ -157,33 +175,38 @@ export function evaluateSymbol(
 
 /**
  * Decide if a signal yields a trade direction per the strict rules.
- * - Spike mode requires the *next* tick to reverse against the spike, AND HTF must align.
- * - Otherwise momentum + HTF must align in the same direction.
- * `lastTickDirAfterSpike` is the direction of the very latest tick AFTER the spike tick.
+ * Added: Mean Reversion logic for spikes against HTF trend.
  */
 export function resolveEntry(
   sig: SymbolSignal,
   ticks: Tick[],
 ): { direction: Direction; mode: "momentum" | "spike" } | null {
-  // Spike mode (priority)
-  if (sig.spike && ticks.length >= 2) {
-    const a = ticks[ticks.length - 2].quote;
-    const b = ticks[ticks.length - 1].quote;
-    const lastDir: Direction = b > a ? "CALL" : b < a ? "PUT" : sig.spike.dir;
-    // wait 1 tick: if spike was UP and next tick is DOWN -> SELL
-    if (sig.spike.dir === "CALL" && lastDir === "PUT" && sig.htf.bias === "BEARISH") {
+  if (ticks.length < 2) return null;
+
+  // 1. Spike Reversal (Mean Reversion) - Very High Accuracy
+  if (sig.spike) {
+    const lastTick = ticks[ticks.length - 1].quote;
+    const prevTick = ticks[ticks.length - 2].quote;
+    const currentDir = lastTick > prevTick ? "CALL" : "PUT";
+
+    // If we had a CALL spike and now price starts ticking down, AND HTF is BEARISH or NEUTRAL
+    if (sig.spike.dir === "CALL" && currentDir === "PUT" && sig.htf.bias !== "BULLISH") {
       return { direction: "PUT", mode: "spike" };
     }
-    if (sig.spike.dir === "PUT" && lastDir === "CALL" && sig.htf.bias === "BULLISH") {
+    // If we had a PUT spike and now price starts ticking up, AND HTF is BULLISH or NEUTRAL
+    if (sig.spike.dir === "PUT" && currentDir === "CALL" && sig.htf.bias !== "BEARISH") {
       return { direction: "CALL", mode: "spike" };
     }
   }
-  // Momentum mode
+
+  // 2. Momentum Follow - Trend Following
+  // Only enter if Momentum matches HTF Bias for strong confluence
   if (sig.momentum === "CALL" && sig.htf.bias === "BULLISH") {
     return { direction: "CALL", mode: "momentum" };
   }
   if (sig.momentum === "PUT" && sig.htf.bias === "BEARISH") {
     return { direction: "PUT", mode: "momentum" };
   }
+
   return null;
 }

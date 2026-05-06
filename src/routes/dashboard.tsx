@@ -210,7 +210,7 @@ function Dashboard({ email }: { email: string }) {
           <StatTile label="Stake Tier" value={`$${bot.currentStake}`} tone="primary" hint="profit-tier ladder" />
           <StatTile label="Cycle" value={`#${bot.cycle}`} hint="batches completed" />
           <StatTile label="Win Rate" value={`${bot.winRate.toFixed(1)}%`} hint={`${bot.wins}W · ${bot.losses}L`} />
-          <StatTile label="Total Trades" value={bot.wins + bot.losses} hint={`${bot.config.batchSize} per cycle`} />
+          <StatTile label="Total Trades" value={bot.wins + bot.losses} hint="one per cycle" />
         </section>
 
         {/* Equity + Ladder */}
