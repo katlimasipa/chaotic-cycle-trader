@@ -98,24 +98,22 @@ export function rsiLast(closes: number[], period = 14): number {
   return 100 - 100 / (1 + rs);
 }
 
-/** Classify HTF trend with more weight on MACD and EMA slope. */
-export function classifyHTF(c15: Candle[], c60: Candle[]): HTFTrend {
-  const candles = c60.length >= 30 ? c60 : c15;
+/** Classify HTF trend with MACD and RSI. */
+export function classifyHTF(candles: Candle[]): HTFTrend {
   if (candles.length < 30) return { bias: "NEUTRAL", macd: 0, stochRsi: 50, closeOpen: 0 };
   
   const closes = candles.map((c) => c.close);
   const { macd, hist } = macdInfo(closes);
   const rsi = rsiLast(closes);
   
-  // Trend identification: MACD above signal and positive histogram, or RSI strong
-  const bullish = hist > 0 && rsi > 55;
-  const bearish = hist < 0 && rsi < 45;
+  const bullish = hist > 0 && rsi > 52;
+  const bearish = hist < 0 && rsi < 48;
   
   return {
     bias: bullish ? "BULLISH" : bearish ? "BEARISH" : "NEUTRAL",
     macd,
-    stochRsi: rsi, // we'll reuse the field but it's regular RSI now for simplicity/reliability
-    closeOpen: closes[closes.length - 1] - closes[closes.length - 5], // 5-candle momentum
+    stochRsi: rsi,
+    closeOpen: closes[closes.length - 1] - closes[closes.length - 5],
   };
 }
 
@@ -141,24 +139,24 @@ export function evaluateSymbol(
 ): SymbolSignal {
   const momentum = tickMomentum(ticks);
   const spike = detectSpike(ticks);
-  const htf = classifyHTF(c15, c60);
+  const htf15 = classifyHTF(c15);
+  const htf60 = classifyHTF(c60);
   const vol = getVolatility(ticks);
+  const rsi = htf15.stochRsi;
   
-  // Quality-based scoring instead of raw volatility
   let score = 0;
   if (momentum) score += 2;
   if (spike) score += 3;
-  if (htf.bias !== "NEUTRAL") score += 1;
+  if (htf15.bias !== "NEUTRAL" && htf15.bias === htf60.bias) score += 2;
   
-  // Volatility filter: Prefer active but not "crazy" markets
   const volWeight = vol > 5 && vol < 50 ? 1 : 0;
   score *= (1 + volWeight);
 
   const parts = [
     momentum ? `mom=${momentum}` : null,
-    spike ? `spike=${spike.dir}×${spike.strength.toFixed(1)}` : null,
-    `htf=${htf.bias}`,
-    `vol=${vol.toFixed(1)}`,
+    spike ? `spike=${spike.dir}` : null,
+    `htf=${htf15.bias}/${htf60.bias}`,
+    `rsi=${rsi.toFixed(0)}`,
   ].filter(Boolean);
 
   return {
@@ -166,7 +164,9 @@ export function evaluateSymbol(
     speed: def.speed,
     momentum,
     spike,
-    htf,
+    htf15,
+    htf60,
+    rsi,
     score,
     reason: parts.join(" • "),
   };

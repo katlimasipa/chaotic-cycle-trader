@@ -273,7 +273,7 @@ export function useDerivBot() {
     cycleRef.current += 1;
     const cycle = cycleRef.current;
     const stake = stakeForProfit(totalProfitRef.current);
-    const duration = speed === "fast" ? 1 : 3;
+    const duration = speed === "fast" ? 5 : 8;
 
     setState((s) => ({ ...s, status: "running", cycle, selected: chosen }));
     pushLog(

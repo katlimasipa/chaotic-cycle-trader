@@ -71,9 +71,11 @@ export interface HTFTrend {
 export interface SymbolSignal {
   symbol: string;
   speed: "fast" | "slow";
-  momentum: Direction | null;     // strict 3-5 monotone
+  momentum: Direction | null;
   spike: { dir: Direction; strength: number } | null;
-  htf: HTFTrend;
+  htf15: HTFTrend;
+  htf60: HTFTrend;
+  rsi: number;
   score: number;
   reason: string;
 }
