@@ -118,16 +118,45 @@ export function classifyHTF(candles: Candle[]): HTFTrend {
 }
 
 /** Realised volatility on recent ticks (stddev of returns). */
-function getVolatility(ticks: Tick[]): number {
-  if (ticks.length < 20) return 0;
-  const tail = ticks.slice(-20);
-  const rets: number[] = [];
-  for (let i = 1; i < tail.length; i++) {
-    rets.push((tail[i].quote - tail[i - 1].quote) / tail[i - 1].quote);
+function getVolatility(ticks: Tick[]): { current: number; isExpanding: boolean } {
+  if (ticks.length < 30) return { current: 0, isExpanding: false };
+  const allRets: number[] = [];
+  for (let i = 1; i < ticks.length; i++) {
+    allRets.push((ticks[i].quote - ticks[i - 1].quote) / ticks[i - 1].quote);
   }
-  const m = rets.reduce((a, b) => a + b, 0) / rets.length;
-  const v = rets.reduce((a, b) => a + (b - m) ** 2, 0) / rets.length;
-  return Math.sqrt(v) * 1e5; // scale higher
+  
+  const currentTail = allRets.slice(-15);
+  const m = currentTail.reduce((a, b) => a + b, 0) / currentTail.length;
+  const v = currentTail.reduce((a, b) => a + (b - m) ** 2, 0) / currentTail.length;
+  const currentVol = Math.sqrt(v) * 1e5;
+
+  // SMA of volatility for expansion check
+  const windowSize = 20;
+  const volHistory: number[] = [];
+  for (let i = 0; i < allRets.length - windowSize; i++) {
+    const slice = allRets.slice(i, i + windowSize);
+    const mm = slice.reduce((a, b) => a + b, 0) / slice.length;
+    const vv = slice.reduce((a, b) => a + (b - mm) ** 2, 0) / slice.length;
+    volHistory.push(Math.sqrt(vv) * 1e5);
+  }
+  
+  const avgVol = volHistory.length ? volHistory.reduce((a, b) => a + b, 0) / volHistory.length : currentVol;
+  
+  return {
+    current: currentVol,
+    isExpanding: currentVol > avgVol * 1.1, // 10% above average
+  };
+}
+
+/** Local EMA (200) filter on ticks. */
+function getLocalTrend(ticks: Tick[]): "BULLISH" | "BEARISH" | "NEUTRAL" {
+  if (ticks.length < 200) return "NEUTRAL";
+  const closes = ticks.map(t => t.quote);
+  const ema200 = ema(closes, 200);
+  const lastEma = ema200[ema200.length - 1];
+  const lastPrice = closes[closes.length - 1];
+  
+  return lastPrice > lastEma ? "BULLISH" : "BEARISH";
 }
 
 /** Build per-symbol signal + score. */
@@ -142,21 +171,22 @@ export function evaluateSymbol(
   const htf15 = classifyHTF(c15);
   const htf60 = classifyHTF(c60);
   const vol = getVolatility(ticks);
+  const localTrend = getLocalTrend(ticks);
   const rsi = htf15.stochRsi;
   
   let score = 0;
   if (momentum) score += 2;
   if (spike) score += 3;
   if (htf15.bias !== "NEUTRAL" && htf15.bias === htf60.bias) score += 2;
+  if (localTrend === htf15.bias) score += 1;
+  if (vol.isExpanding) score += 1;
   
-  const volWeight = vol > 5 && vol < 50 ? 1 : 0;
-  score *= (1 + volWeight);
-
   const parts = [
     momentum ? `mom=${momentum}` : null,
     spike ? `spike=${spike.dir}` : null,
     `htf=${htf15.bias}/${htf60.bias}`,
-    `rsi=${rsi.toFixed(0)}`,
+    `local=${localTrend}`,
+    vol.isExpanding ? "vol↑" : "vol-",
   ].filter(Boolean);
 
   return {
@@ -173,39 +203,48 @@ export function evaluateSymbol(
 }
 
 /**
- * resolveEntry: High frequency with basic trend confluence.
+ * resolveEntry: Full Confluence Logic (Pine Script Inspired).
  */
 export function resolveEntry(sig: SymbolSignal, ticks: Tick[]): { mode: "momentum" | "spike"; direction: Direction } | null {
   if (ticks.length < 5) return null;
   const lastTick = ticks[ticks.length - 1].quote;
   const prevTick = ticks[ticks.length - 2].quote;
 
-  // 1. HTF Filter: Use only 15m bias for speed.
-  const bias = sig.htf15.bias;
+  // 1. HTF Trend (15m & 60m must be same or non-opposing)
+  const bias15 = sig.htf15.bias;
+  const bias60 = sig.htf60.bias;
+  
+  // 2. Local Filter (EMA 200)
+  const localTrend = getLocalTrend(ticks);
+  
+  // 3. Volatility Expanding check
+  const vol = getVolatility(ticks);
+  if (!vol.isExpanding) return null;
 
-  // 2. Momentum Strategy (Trend Following)
+  // 4. Momentum Strategy
   const mom = tickMomentum(ticks);
   if (mom) {
-    // Match 15m trend or if trend is neutral
-    if (bias === "NEUTRAL" || mom === bias) {
-      // Very loose RSI guards (75/25)
-      if (mom === "CALL" && sig.rsi > 75) return null;
-      if (mom === "PUT" && sig.rsi < 25) return null;
+    // Pine Script Style: HTF Bullish + Local Bullish + Momentum Up
+    const isBullishConfluence = mom === "CALL" && bias15 === "BULLISH" && (bias60 !== "BEARISH") && localTrend === "BULLISH";
+    const isBearishConfluence = mom === "PUT" && bias15 === "BEARISH" && (bias60 !== "BULLISH") && localTrend === "BEARISH";
+    
+    if (isBullishConfluence || isBearishConfluence) {
+      if (mom === "CALL" && sig.rsi > 70) return null;
+      if (mom === "PUT" && sig.rsi < 30) return null;
       return { mode: "momentum", direction: mom };
     }
   }
 
-  // 3. Spike Strategy (Mean Reversion)
+  // 5. Spike Strategy (Mean Reversion Outliers)
   const spike = detectSpike(ticks);
   if (spike) {
     const reversalDir: Direction = spike.dir === "CALL" ? "PUT" : "CALL";
     
-    // Trade spikes if 15m is NOT strongly trending against the reversal
-    if (bias === "NEUTRAL" || reversalDir === bias) {
+    // Reverse only if it's an outlier move AGAINST the trend or in extreme exhaustion
+    const isExhaustion = spike.dir === "CALL" ? sig.rsi > 75 : sig.rsi < 25;
+    if (isExhaustion) {
       const isReverting = reversalDir === "CALL" ? lastTick > prevTick : lastTick < prevTick;
-      if (isReverting) {
-        return { mode: "spike", direction: reversalDir };
-      }
+      if (isReverting) return { mode: "spike", direction: reversalDir };
     }
   }
 

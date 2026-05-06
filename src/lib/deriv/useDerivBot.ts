@@ -366,6 +366,12 @@ export function useDerivBot() {
       pushLog(
         `Cycle #${cycle} LOSS $${cyclePnl.toFixed(2)} • cooldown ${cooldownRef.current} (streak ${consecutiveLossesRef.current})`,
       );
+      
+      if (consecutiveLossesRef.current >= 3) {
+        pushLog("Max loss streak reached (3). Stopping bot for safety.");
+        runningRef.current = false;
+        setState(s => ({ ...s, status: "stopped" }));
+      }
     } else {
       consecutiveLossesRef.current = 0;
       pushLog(`Cycle #${cycle} WIN +$${cyclePnl.toFixed(2)} • Total $${totalProfitRef.current.toFixed(2)}`);
