@@ -5,8 +5,8 @@ import type { Candle, Direction, HTFTrend, SymbolSignal, SymbolDef, Tick } from 
  * Returns direction if consistency is high (>70%).
  */
 export function tickMomentum(ticks: Tick[]): Direction | null {
-  if (ticks.length < 10) return null;
-  const tail = ticks.slice(-10);
+  if (ticks.length < 7) return null;
+  const tail = ticks.slice(-7); // Look at last 7 ticks
   let ups = 0;
   let downs = 0;
   
@@ -15,24 +15,23 @@ export function tickMomentum(ticks: Tick[]): Direction | null {
     else if (tail[i].quote < tail[i - 1].quote) downs++;
   }
 
-  // Require high consistency
-  if (ups < 8 && downs < 8) return null;
+  // Require 5/6 moves (approx 83%) - slightly looser than before
+  if (ups < 5 && downs < 5) return null;
 
-  // Added: Min distance check (0.01% of price)
+  // Reduced Min distance check (0.002% of price)
   const netMove = Math.abs(tail[tail.length - 1].quote - tail[0].quote);
-  const minMove = tail[0].quote * 0.00005; // 0.005% of price as a minimum move threshold
+  const minMove = tail[0].quote * 0.00002; 
   if (netMove < minMove) return null;
   
-  return ups >= 8 ? "CALL" : "PUT";
+  return ups >= 5 ? "CALL" : "PUT";
 }
 
 /** 
- * Spike: last tick move > 3x avg of previous 10 sizes.
- * Must also be significant relative to absolute price.
+ * Spike: last tick move > 2.5x avg of previous 7 sizes.
  */
 export function detectSpike(ticks: Tick[]): { dir: Direction; strength: number } | null {
-  if (ticks.length < 12) return null;
-  const tail = ticks.slice(-12);
+  if (ticks.length < 10) return null;
+  const tail = ticks.slice(-10);
   const sizes: number[] = [];
   for (let i = 1; i < tail.length; i++) sizes.push(Math.abs(tail[i].quote - tail[i - 1].quote));
   
@@ -43,8 +42,8 @@ export function detectSpike(ticks: Tick[]): { dir: Direction; strength: number }
   if (avg <= 0) return null;
   const ratio = last / avg;
   
-  // Higher threshold (3.0 instead of 2.5) for better accuracy
-  if (ratio < 3.0) return null;
+  // Loosened threshold (2.5) for more entries
+  if (ratio < 2.5) return null;
   
   const lastDir: Direction = tail[tail.length - 1].quote > tail[tail.length - 2].quote ? "CALL" : "PUT";
   return { dir: lastDir, strength: ratio };

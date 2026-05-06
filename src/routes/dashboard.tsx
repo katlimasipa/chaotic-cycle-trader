@@ -136,6 +136,12 @@ function Dashboard({ email }: { email: string }) {
             <h2 className="font-display font-semibold mb-2">Session limits</h2>
             <div className="grid grid-cols-3 gap-3">
               <div>
+                <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">Batch Size</Label>
+                <Input type="number" placeholder="5" value={bot.config.batchSize}
+                  onChange={(e) => { bot.setConfig({ ...bot.config, batchSize: e.target.value ? +e.target.value : 5 }); }}
+                  className="mt-1 font-mono" />
+              </div>
+              <div>
                 <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">Take Profit</Label>
                 <Input type="number" placeholder="—" value={tp}
                   onChange={(e) => { setTp(e.target.value); bot.setConfig({ ...bot.config, takeProfit: e.target.value ? +e.target.value : null }); }}
@@ -210,7 +216,7 @@ function Dashboard({ email }: { email: string }) {
           <StatTile label="Stake Tier" value={`$${bot.currentStake}`} tone="primary" hint="profit-tier ladder" />
           <StatTile label="Cycle" value={`#${bot.cycle}`} hint="batches completed" />
           <StatTile label="Win Rate" value={`${bot.winRate.toFixed(1)}%`} hint={`${bot.wins}W · ${bot.losses}L`} />
-          <StatTile label="Total Trades" value={bot.wins + bot.losses} hint="one per cycle" />
+          <StatTile label="Total Trades" value={bot.wins + bot.losses} hint={`${bot.config.batchSize} per cycle`} />
         </section>
 
         {/* Equity + Ladder */}

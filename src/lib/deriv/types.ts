@@ -53,6 +53,7 @@ export interface TradeRecord {
 
 export interface BotConfig {
   symbols: string[];           // active set (codes)
+  batchSize: number;
   takeProfit: number | null;
   stopLoss: number | null;
   maxCycles: number | null;

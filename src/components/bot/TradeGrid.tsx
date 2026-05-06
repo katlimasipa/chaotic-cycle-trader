@@ -22,45 +22,74 @@ export function TradeGrid({ trades }: Props) {
     );
   }
 
+  // Group by cycle
+  const byCycle = new Map<number, TradeRecord[]>();
+  trades.forEach((t) => {
+    if (!byCycle.has(t.cycle)) byCycle.set(t.cycle, []);
+    byCycle.get(t.cycle)!.push(t);
+  });
+  const cycles = Array.from(byCycle.entries()).sort((a, b) => b[0] - a[0]);
+
   return (
-    <div className="flex flex-col gap-3 max-h-[520px] overflow-y-auto pr-1">
-      {trades.map((t) => (
-        <div key={t.id} className="glass rounded-xl p-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className={cn(
-              "w-10 h-10 rounded-lg flex items-center justify-center font-bold text-lg",
-              t.direction === "CALL" ? "bg-success/20 text-success" : "bg-destructive/20 text-destructive"
-            )}>
-              {t.direction === "CALL" ? "▲" : "▼"}
+    <div className="flex flex-col gap-4 max-h-[520px] overflow-y-auto pr-1">
+      {cycles.map(([cycle, items]) => {
+        const dir = items[0]?.direction;
+        const cyclePnl = items.reduce((s, t) => s + (t.profit ?? 0), 0);
+        const allClosed = items.every(
+          (t) => t.status === "won" || t.status === "lost" || t.status === "error",
+        );
+        return (
+          <div key={cycle} className="glass rounded-xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-3">
+                <span className="font-display font-semibold">Cycle #{cycle}</span>
+                <span
+                  className={cn(
+                    "text-xs px-2 py-0.5 rounded-full border",
+                    dir === "CALL"
+                      ? "border-success/50 text-success bg-success/10"
+                      : "border-destructive/50 text-destructive bg-destructive/10",
+                  )}
+                >
+                  {dir === "CALL" ? "▲ RISE" : "▼ FALL"}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  stake ${items[0]?.stake} · {items[0]?.symbol}
+                </span>
+              </div>
+              {allClosed && (
+                <span
+                  className={cn(
+                    "tabular text-sm font-medium",
+                    cyclePnl >= 0 ? "text-success" : "text-destructive",
+                  )}
+                >
+                  {cyclePnl >= 0 ? "+" : ""}${cyclePnl.toFixed(2)}
+                </span>
+              )}
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-display font-semibold">{t.symbol}</span>
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Cycle #{t.cycle}</span>
-              </div>
-              <div className="text-xs text-muted-foreground font-mono">
-                ${t.stake} · {t.duration}t · {new Date(t.openedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-              </div>
+            <div className="grid grid-cols-5 gap-2">
+              {items.map((t) => (
+                <div
+                  key={t.id}
+                  className={cn(
+                    "rounded-lg px-2 py-3 text-center text-xs font-mono",
+                    statusStyle[t.status],
+                  )}
+                  title={t.error || `${t.status} • ${t.profit ?? "-"}`}
+                >
+                  <div className="uppercase tracking-wide opacity-70 text-[10px]">
+                    {t.status}
+                  </div>
+                  <div className="tabular mt-1 text-sm">
+                    {t.profit != null ? (t.profit >= 0 ? "+" : "") + t.profit.toFixed(2) : "—"}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
-          <div className="text-right">
-            <div className={cn(
-              "text-xs px-2 py-0.5 rounded-full mb-1 inline-block uppercase tracking-wider font-semibold",
-              statusStyle[t.status]
-            )}>
-              {t.status}
-            </div>
-            {t.profit != null && (
-              <div className={cn(
-                "font-mono font-bold tabular text-sm",
-                t.profit >= 0 ? "text-success" : "text-destructive"
-              )}>
-                {t.profit >= 0 ? "+" : ""}${t.profit.toFixed(2)}
-              </div>
-            )}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
