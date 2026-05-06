@@ -157,11 +157,12 @@ export class DerivClient {
     return this.send({ forget_all: type });
   }
 
-  /** Buy a Rise/Fall 1-tick contract at market. */
+  /** Buy a Rise/Fall contract (1 or 3 ticks). */
   async buyRiseFall(opts: {
     symbol: string;
     direction: "CALL" | "PUT";
     stake: number;
+    duration?: number;
     currency?: string;
   }) {
     const parameters = {
@@ -169,13 +170,13 @@ export class DerivClient {
       basis: "stake",
       contract_type: opts.direction,
       currency: opts.currency ?? "USD",
-      duration: 1,
+      duration: opts.duration ?? 1,
       duration_unit: "t",
       symbol: opts.symbol,
     };
     return this.send({
       buy: 1,
-      price: opts.stake, // max price client will pay
+      price: opts.stake,
       parameters,
     });
   }
@@ -186,5 +187,17 @@ export class DerivClient {
       { proposal_open_contract: 1, contract_id: contractId, subscribe: 1 },
       onUpdate,
     );
+  }
+
+  /** Fetch candles history. granularity in seconds (900 = 15m, 3600 = 1h). */
+  async candles(symbol: string, granularity: number, count = 60) {
+    return this.send({
+      ticks_history: symbol,
+      adjust_start_time: 1,
+      count,
+      end: "latest",
+      granularity,
+      style: "candles",
+    });
   }
 }
