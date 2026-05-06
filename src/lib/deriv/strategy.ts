@@ -5,8 +5,8 @@ import type { Candle, Direction, HTFTrend, SymbolSignal, SymbolDef, Tick } from 
  * Returns direction if consistency is high (>70%).
  */
 export function tickMomentum(ticks: Tick[]): Direction | null {
-  if (ticks.length < 12) return null;
-  const tail = ticks.slice(-10); // Look at last 10 ticks
+  if (ticks.length < 9) return null;
+  const tail = ticks.slice(-9);
   let ups = 0;
   let downs = 0;
   
@@ -15,23 +15,23 @@ export function tickMomentum(ticks: Tick[]): Direction | null {
     else if (tail[i].quote < tail[i - 1].quote) downs++;
   }
 
-  // Extreme consistency: 9 out of 9 moves (100% monotonic in last 10 ticks)
-  if (ups < 9 && downs < 9) return null;
+  // 7 out of 8 moves (approx 87%) - Faster but still trending
+  if (ups < 7 && downs < 7) return null;
 
-  // Significant Distance check (0.01% of price) - requires a real move
+  // Reduced Min distance check (0.002% of price)
   const netMove = Math.abs(tail[tail.length - 1].quote - tail[0].quote);
-  const minMove = tail[0].quote * 0.0001; 
+  const minMove = tail[0].quote * 0.00002; 
   if (netMove < minMove) return null;
   
-  return ups >= 9 ? "CALL" : "PUT";
+  return ups >= 7 ? "CALL" : "PUT";
 }
 
 /** 
- * Spike: last tick move > 4.0x avg of previous 15 sizes.
+ * Spike: last tick move > 2.5x avg of previous 10 sizes.
  */
 export function detectSpike(ticks: Tick[]): { dir: Direction; strength: number } | null {
-  if (ticks.length < 20) return null;
-  const tail = ticks.slice(-16);
+  if (ticks.length < 12) return null;
+  const tail = ticks.slice(-10);
   const sizes: number[] = [];
   for (let i = 1; i < tail.length; i++) sizes.push(Math.abs(tail[i].quote - tail[i - 1].quote));
   
@@ -42,8 +42,8 @@ export function detectSpike(ticks: Tick[]): { dir: Direction; strength: number }
   if (avg <= 0) return null;
   const ratio = last / avg;
   
-  // High threshold (4.0) for absolute certainty
-  if (ratio < 4.0) return null;
+  // 2.5x for much more frequent spike entries
+  if (ratio < 2.5) return null;
   
   const lastDir: Direction = tail[tail.length - 1].quote > tail[tail.length - 2].quote ? "CALL" : "PUT";
   return { dir: lastDir, strength: ratio };
@@ -173,39 +173,39 @@ export function evaluateSymbol(
 }
 
 /**
- * resolveEntry: Only enter if HTF perfectly aligns and RSI is not extreme.
+ * resolveEntry: High frequency with basic trend confluence.
  */
 export function resolveEntry(sig: SymbolSignal, ticks: Tick[]): { mode: "momentum" | "spike"; direction: Direction } | null {
   if (ticks.length < 5) return null;
   const lastTick = ticks[ticks.length - 1].quote;
   const prevTick = ticks[ticks.length - 2].quote;
 
-  // 1. Mandatory HTF Confluence (Both must align)
-  if (sig.htf15 !== sig.htf60) return null;
-  const macroTrend = sig.htf15;
-  if (macroTrend === "NEUTRAL") return null;
+  // 1. HTF Filter: Use only 15m bias for speed.
+  const bias = sig.htf15.bias;
 
   // 2. Momentum Strategy (Trend Following)
   const mom = tickMomentum(ticks);
-  if (mom && mom === macroTrend) {
-    // RSI Filter: Don't buy the peak of a move
-    if (mom === "CALL" && sig.rsi > 65) return null;
-    if (mom === "PUT" && sig.rsi < 35) return null;
-    return { mode: "momentum", direction: mom };
+  if (mom) {
+    // Match 15m trend or if trend is neutral
+    if (bias === "NEUTRAL" || mom === bias) {
+      // Very loose RSI guards (75/25)
+      if (mom === "CALL" && sig.rsi > 75) return null;
+      if (mom === "PUT" && sig.rsi < 25) return null;
+      return { mode: "momentum", direction: mom };
+    }
   }
 
   // 3. Spike Strategy (Mean Reversion)
   const spike = detectSpike(ticks);
   if (spike) {
-    const isOverextended = spike.dir === "CALL" ? sig.rsi > 70 : sig.rsi < 30;
-    if (!isOverextended) return null; // Only take spikes that are extreme
-
     const reversalDir: Direction = spike.dir === "CALL" ? "PUT" : "CALL";
     
-    // Wait for a reversal tick (don't catch falling knife)
-    const isReverting = reversalDir === "CALL" ? lastTick > prevTick : lastTick < prevTick;
-    if (isReverting) {
-      return { mode: "spike", direction: reversalDir };
+    // Trade spikes if 15m is NOT strongly trending against the reversal
+    if (bias === "NEUTRAL" || reversalDir === bias) {
+      const isReverting = reversalDir === "CALL" ? lastTick > prevTick : lastTick < prevTick;
+      if (isReverting) {
+        return { mode: "spike", direction: reversalDir };
+      }
     }
   }
 
