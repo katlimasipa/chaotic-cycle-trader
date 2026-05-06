@@ -1,0 +1,347 @@
+// © Structure OS
+//@version=6
+indicator("Structure OS", shorttitle="S-OS", overlay=true,
+     max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+i_bull_col  = input.color(color.new(#26a69a,0), "Bull Colour",  group="Structure")
+i_bear_col  = input.color(color.new(#ef5350,0), "Bear Colour",  group="Structure")
+i_lvl_col   = input.color(color.new(#546e7a,50),"Level Line",   group="Structure")
+i_show_bos  = input.bool(true, "Show BOS",   group="Structure")
+i_show_cho  = input.bool(true, "Show CHoCH", group="Structure")
+i_show_lbl  = input.bool(true, "Show HH/HL/LH/LL", group="Structure")
+i_show_db   = input.bool(true, "Show Dashboard", group="Dashboard")
+i_db_pos    = input.string("Top Right", "Position",
+     options=["Top Right","Top Left","Bottom Right","Bottom Left"], group="Dashboard")
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+f_bias(float c, float ph, float pl, string n) =>
+    string dir = "Neutral"
+    string ctx = "Inside Range"
+    if c > ph
+        dir := "Bullish"
+        ctx := "Close > Prev " + n + " High"
+    else if c < pl
+        dir := "Bearish"
+        ctx := "Close < Prev " + n + " Low"
+    [dir, ctx]
+
+f_dir_c(string d) =>
+    d == "Bullish" ? color.new(#26a69a,0) : d == "Bearish" ? color.new(#ef5350,0) : color.new(#8b949e,0)
+
+f_stg_c(string s) =>
+    s == "Shift" ? color.new(#ffa726,0) : s == "Expansion" ? color.new(#26a69a,0) : color.new(#64b5f6,0)
+
+f_mtf_dir(int t) =>
+    t == 1 ? "Bullish" : t == -1 ? "Bearish" : "Neutral"
+
+f_mtf_stage(string b) =>
+    string r = "Continuation"
+    if b == "CHoCH"
+        r := "Shift"
+    else if b == "BOS"
+        r := "Expansion"
+    r
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+var float hi_cand   = na
+var float lo_cand   = na
+var int   hi_cnt    = 0
+var int   lo_cnt    = 0
+var float hi_prevL  = na   // previous bear candle LOW  (strict: close must pass prev low)
+var float lo_prevH  = na   // previous bull candle HIGH (strict: close must pass prev high)
+var float conf_hi   = na
+var float conf_lo   = na
+var int   conf_hi_b = na
+var int   conf_lo_b = na
+var float last_hi   = na
+var float last_lo   = na
+var int   sw_trend  = 0
+var string last_brk = na
+var int   brk_bar   = na
+
+// ─── CANDIDATE TRACKING ───────────────────────────────────────────────────────
+bool isBull = close > open
+bool isBear = close < open
+bool new_hi = na(hi_cand) or high > hi_cand
+bool new_lo = na(lo_cand) or low  < lo_cand
+
+if new_hi
+    hi_cand  := high
+    hi_cnt   := 0
+    hi_prevL := na
+
+if new_lo
+    lo_cand  := low
+    lo_cnt   := 0
+    lo_prevH := na
+
+// ─── 3-CANDLE PULLBACK (strict: each close must pass previous candle's extreme) ─
+// HIGH: need 3 bear candles each closing below the prior bear candle's LOW
+if not new_hi
+    if isBear
+        if na(hi_prevL) or close < hi_prevL
+            hi_cnt   += 1
+            hi_prevL := low
+        else
+            hi_cnt   := 1
+            hi_prevL := low
+    else
+        hi_cnt   := 0
+        hi_prevL := na
+
+// LOW: need 3 bull candles each closing above the prior bull candle's HIGH
+if not new_lo
+    if isBull
+        if na(lo_prevH) or close > lo_prevH
+            lo_cnt   += 1
+            lo_prevH := high
+        else
+            lo_cnt   := 1
+            lo_prevH := high
+    else
+        lo_cnt   := 0
+        lo_prevH := na
+
+// ─── CONFIRM SWINGS ───────────────────────────────────────────────────────────
+bool hi_ok = hi_cnt >= 3
+bool lo_ok = lo_cnt >= 3
+bool hi_ev = hi_ok and not hi_ok[1]
+bool lo_ev = lo_ok and not lo_ok[1]
+
+if hi_ev
+    last_hi   := conf_hi
+    conf_hi   := hi_cand
+    conf_hi_b := bar_index - hi_cnt
+    hi_cnt    := 0
+    hi_prevL  := na
+    lo_cand   := low
+    lo_cnt    := 0
+    lo_prevH  := na
+
+if lo_ev
+    last_lo   := conf_lo
+    conf_lo   := lo_cand
+    conf_lo_b := bar_index - lo_cnt
+    lo_cnt    := 0
+    lo_prevH  := na
+    hi_cand   := high
+    hi_cnt    := 0
+    hi_prevL  := na
+
+// ─── BOS / CHoCH ─────────────────────────────────────────────────────────────
+bool sw_fresh  = na(brk_bar) or bar_index > brk_bar
+bool bull_ev   = not na(conf_hi) and close > conf_hi and sw_fresh
+bool bear_ev   = not na(conf_lo) and close < conf_lo and sw_fresh and not bull_ev
+
+string brk_lbl  = na
+color  brk_col  = na
+int    brk_dir  = 0
+float  brk_lvl  = na
+int    brk_from = na
+
+if bull_ev
+    brk_lbl  := sw_trend <= 0 ? "CHoCH" : "BOS"
+    brk_col  := sw_trend <= 0 ? i_bull_col : i_bull_col
+    brk_dir  := 1
+    brk_lvl  := conf_hi
+    brk_from := conf_hi_b
+    last_brk := brk_lbl
+    brk_bar  := bar_index
+    sw_trend := 1
+    conf_hi  := na
+
+if bear_ev
+    brk_lbl  := sw_trend >= 0 ? "CHoCH" : "BOS"
+    brk_col  := sw_trend >= 0 ? i_bear_col : i_bear_col
+    brk_dir  := -1
+    brk_lvl  := conf_lo
+    brk_from := conf_lo_b
+    last_brk := brk_lbl
+    brk_bar  := bar_index
+    sw_trend := -1
+    conf_lo  := na
+
+// ─── DRAW: ACTIVE RANGE LEVEL LINES (thin solid, extend right) ───────────────
+var line ln_hi = na
+var line ln_lo = na
+
+if hi_ev and not na(conf_hi) and not na(conf_hi_b)
+    line.delete(ln_hi)
+    ln_hi := line.new(conf_hi_b, conf_hi, bar_index + 1, conf_hi,
+         extend=extend.right, color=i_lvl_col, width=1, style=line.style_solid)
+
+if lo_ev and not na(conf_lo) and not na(conf_lo_b)
+    line.delete(ln_lo)
+    ln_lo := line.new(conf_lo_b, conf_lo, bar_index + 1, conf_lo,
+         extend=extend.right, color=i_lvl_col, width=1, style=line.style_solid)
+
+// ─── DRAW: HH / HL / LH / LL (small bubble label at swing point) ─────────────
+if i_show_lbl
+    if hi_ev and not na(last_hi) and not na(conf_hi_b)
+        string lbl = conf_hi > last_hi ? "HH" : "LH"
+        color  bc  = conf_hi > last_hi ? color.new(i_bull_col,70) : color.new(i_bear_col,70)
+        label.new(conf_hi_b, conf_hi, lbl,
+             style=label.style_label_down, yloc=yloc.price,
+             color=bc, textcolor=color.white, size=size.small)
+
+    if lo_ev and not na(last_lo) and not na(conf_lo_b)
+        string lbl = conf_lo < last_lo ? "LL" : "HL"
+        color  bc  = conf_lo < last_lo ? color.new(i_bear_col,70) : color.new(i_bull_col,70)
+        label.new(conf_lo_b, conf_lo, lbl,
+             style=label.style_label_up, yloc=yloc.price,
+             color=bc, textcolor=color.white, size=size.small)
+
+// ─── DRAW: BOS / CHoCH ────────────────────────────────────────────────────────
+if not na(brk_lbl)
+    bool do_bos   = brk_lbl == "BOS"   and i_show_bos
+    bool do_choch = brk_lbl == "CHoCH" and i_show_cho
+    if do_bos or do_choch
+        // Delete the now-broken range level line
+        if brk_dir == 1
+            line.delete(ln_hi)
+        else
+            line.delete(ln_lo)
+
+        // Solid horizontal break line: swing origin → break bar
+        int origin = na(brk_from) ? bar_index - 10 : brk_from
+        line.new(origin, brk_lvl, bar_index, brk_lvl,
+             color=brk_col, width=2, style=line.style_solid)
+
+        // Label at break bar, above/below the candle
+        label.new(bar_index, brk_dir == 1 ? high : low, brk_lbl,
+             style    = brk_dir == 1 ? label.style_label_up : label.style_label_down,
+             yloc     = yloc.price,
+             color    = brk_col,
+             textcolor= color.white,
+             size     = size.small)
+
+// ─── MTF: DIRECTIONAL BIAS ───────────────────────────────────────────────────
+[mo_ph, mo_pl, mo_c] = request.security(syminfo.tickerid, "M",
+     [high[1], low[1], close[1]], lookahead=barmerge.lookahead_off)
+[wk_ph, wk_pl, wk_c] = request.security(syminfo.tickerid, "W",
+     [high[1], low[1], close[1]], lookahead=barmerge.lookahead_off)
+[dy_ph, dy_pl, dy_c] = request.security(syminfo.tickerid, "D",
+     [high[1], low[1], close[1]], lookahead=barmerge.lookahead_off)
+
+[mo_dir, mo_ctx] = f_bias(mo_c, mo_ph, mo_pl, "Monthly")
+[wk_dir, wk_ctx] = f_bias(wk_c, wk_ph, wk_pl, "Weekly")
+[dy_dir, dy_ctx] = f_bias(dy_c, dy_ph, dy_pl, "Daily")
+
+// ─── MTF: MARKET STRUCTURE ───────────────────────────────────────────────────
+[h4_t,  h4_b]  = request.security(syminfo.tickerid, "240",
+     [sw_trend, last_brk], lookahead=barmerge.lookahead_off)
+[h1_t,  h1_b]  = request.security(syminfo.tickerid, "60",
+     [sw_trend, last_brk], lookahead=barmerge.lookahead_off)
+[m30_t, m30_b] = request.security(syminfo.tickerid, "30",
+     [sw_trend, last_brk], lookahead=barmerge.lookahead_off)
+[m15_t, m15_b] = request.security(syminfo.tickerid, "15",
+     [sw_trend, last_brk], lookahead=barmerge.lookahead_off)
+[m5_t,  m5_b]  = request.security(syminfo.tickerid, "5",
+     [sw_trend, last_brk], lookahead=barmerge.lookahead_off)
+[m3_t,  m3_b]  = request.security(syminfo.tickerid, "3",
+     [sw_trend, last_brk], lookahead=barmerge.lookahead_off)
+[m1_t,  m1_b]  = request.security(syminfo.tickerid, "1",
+     [sw_trend, last_brk], lookahead=barmerge.lookahead_off)
+
+int  cur_sec = timeframe.in_seconds(timeframe.period)
+bool sh_h4   = cur_sec <= timeframe.in_seconds("240")
+bool sh_h1   = cur_sec < timeframe.in_seconds("240") and cur_sec <= timeframe.in_seconds("60")
+bool sh_m30  = cur_sec < timeframe.in_seconds("60")  and cur_sec <= timeframe.in_seconds("30")
+bool sh_m15  = cur_sec < timeframe.in_seconds("30")  and cur_sec <= timeframe.in_seconds("15")
+bool sh_m5   = cur_sec < timeframe.in_seconds("15")  and cur_sec <= timeframe.in_seconds("5")
+bool sh_m3   = cur_sec < timeframe.in_seconds("5")   and cur_sec <= timeframe.in_seconds("3")
+bool sh_m1   = cur_sec < timeframe.in_seconds("3")   and cur_sec <= timeframe.in_seconds("1")
+
+string h4_d  = f_mtf_dir(h4_t)  ;  string h4_s  = f_mtf_stage(h4_b)
+string h1_d  = f_mtf_dir(h1_t)  ;  string h1_s  = f_mtf_stage(h1_b)
+string m30_d = f_mtf_dir(m30_t) ;  string m30_s = f_mtf_stage(m30_b)
+string m15_d = f_mtf_dir(m15_t) ;  string m15_s = f_mtf_stage(m15_b)
+string m5_d  = f_mtf_dir(m5_t)  ;  string m5_s  = f_mtf_stage(m5_b)
+string m3_d  = f_mtf_dir(m3_t)  ;  string m3_s  = f_mtf_stage(m3_b)
+string m1_d  = f_mtf_dir(m1_t)  ;  string m1_s  = f_mtf_stage(m1_b)
+
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
+var table dash = na
+
+if i_show_db and barstate.islast
+    table.delete(dash)
+
+    tpos = switch i_db_pos
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        =>                position.top_right
+
+    int st_rows = (sh_h4 ? 1 : 0) + (sh_h1 ? 1 : 0) + (sh_m30 ? 1 : 0) + (sh_m15 ? 1 : 0) + (sh_m5 ? 1 : 0) + (sh_m3 ? 1 : 0) + (sh_m1 ? 1 : 0)
+
+    dash := table.new(tpos, 3, 7 + st_rows,
+         bgcolor=color.new(#0d1117,5),
+         border_color=color.new(#30363d,0), border_width=1,
+         frame_color=color.new(#30363d,0),  frame_width=1)
+
+    color HC  = color.new(#161b22,0)
+    color CC  = color.new(#0d1117,0)
+    color CT  = color.new(#e6edf3,0)
+    color CS  = color.new(#8b949e,0)
+    color CA  = color.new(#58a6ff,0)
+    string SZ = size.small
+
+    table.cell(dash,0,0,"DIRECTIONAL BIAS",text_color=CA,bgcolor=HC,text_size=SZ,text_halign=text.align_left)
+    table.cell(dash,1,0,"",               text_color=CA,bgcolor=HC,text_size=SZ)
+    table.cell(dash,2,0,"",               text_color=CA,bgcolor=HC,text_size=SZ)
+    table.cell(dash,0,1,"TF",        text_color=CS,bgcolor=HC,text_size=SZ,text_halign=text.align_left)
+    table.cell(dash,1,1,"Direction", text_color=CS,bgcolor=HC,text_size=SZ)
+    table.cell(dash,2,1,"Context",   text_color=CS,bgcolor=HC,text_size=SZ,text_halign=text.align_left)
+    table.cell(dash,0,2,"Monthly",text_color=CT,bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+    table.cell(dash,1,2,mo_dir,   text_color=f_dir_c(mo_dir),bgcolor=CC,text_size=SZ)
+    table.cell(dash,2,2,mo_ctx,   text_color=CS,bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+    table.cell(dash,0,3,"Weekly", text_color=CT,bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+    table.cell(dash,1,3,wk_dir,   text_color=f_dir_c(wk_dir),bgcolor=CC,text_size=SZ)
+    table.cell(dash,2,3,wk_ctx,   text_color=CS,bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+    table.cell(dash,0,4,"Daily",  text_color=CT,bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+    table.cell(dash,1,4,dy_dir,   text_color=f_dir_c(dy_dir),bgcolor=CC,text_size=SZ)
+    table.cell(dash,2,4,dy_ctx,   text_color=CS,bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+
+    table.cell(dash,0,5,"MARKET STRUCTURE",text_color=CA,bgcolor=HC,text_size=SZ,text_halign=text.align_left)
+    table.cell(dash,1,5,"",               text_color=CA,bgcolor=HC,text_size=SZ)
+    table.cell(dash,2,5,"",               text_color=CA,bgcolor=HC,text_size=SZ)
+    table.cell(dash,0,6,"TF",        text_color=CS,bgcolor=HC,text_size=SZ,text_halign=text.align_left)
+    table.cell(dash,1,6,"Direction", text_color=CS,bgcolor=HC,text_size=SZ)
+    table.cell(dash,2,6,"Stage",     text_color=CS,bgcolor=HC,text_size=SZ,text_halign=text.align_left)
+
+    int row = 7
+    if sh_h4
+        table.cell(dash,0,row,"4H", text_color=CT,           bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        table.cell(dash,1,row,h4_d, text_color=f_dir_c(h4_d),bgcolor=CC,text_size=SZ)
+        table.cell(dash,2,row,h4_s, text_color=f_stg_c(h4_s),bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        row := row + 1
+    if sh_h1
+        table.cell(dash,0,row,"1H", text_color=CT,           bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        table.cell(dash,1,row,h1_d, text_color=f_dir_c(h1_d),bgcolor=CC,text_size=SZ)
+        table.cell(dash,2,row,h1_s, text_color=f_stg_c(h1_s),bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        row := row + 1
+    if sh_m30
+        table.cell(dash,0,row,"30M",  text_color=CT,            bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        table.cell(dash,1,row,m30_d,  text_color=f_dir_c(m30_d),bgcolor=CC,text_size=SZ)
+        table.cell(dash,2,row,m30_s,  text_color=f_stg_c(m30_s),bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        row := row + 1
+    if sh_m15
+        table.cell(dash,0,row,"15M",  text_color=CT,            bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        table.cell(dash,1,row,m15_d,  text_color=f_dir_c(m15_d),bgcolor=CC,text_size=SZ)
+        table.cell(dash,2,row,m15_s,  text_color=f_stg_c(m15_s),bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        row := row + 1
+    if sh_m5
+        table.cell(dash,0,row,"5M",  text_color=CT,           bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        table.cell(dash,1,row,m5_d,  text_color=f_dir_c(m5_d),bgcolor=CC,text_size=SZ)
+        table.cell(dash,2,row,m5_s,  text_color=f_stg_c(m5_s),bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        row := row + 1
+    if sh_m3
+        table.cell(dash,0,row,"3M",  text_color=CT,           bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        table.cell(dash,1,row,m3_d,  text_color=f_dir_c(m3_d),bgcolor=CC,text_size=SZ)
+        table.cell(dash,2,row,m3_s,  text_color=f_stg_c(m3_s),bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        row := row + 1
+    if sh_m1
+        table.cell(dash,0,row,"1M",  text_color=CT,           bgcolor=CC,text_size=SZ,text_halign=text.align_left)
+        table.cell(dash,1,row,m1_d,  text_color=f_dir_c(m1_d),bgcolor=CC,text_size=SZ)
+        table.cell(dash,2,row,m1_s,  text_color=f_stg_c(m1_s),bgcolor=CC,text_size=SZ,text_halign=text.align_left)
